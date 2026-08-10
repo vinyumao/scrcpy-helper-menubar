@@ -1,0 +1,39 @@
+name: ScrcpyHelper
+options:
+  bundleIdPrefix: tools.wayne
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+settings:
+  BASE_SDK: macosx
+  SWIFT_VERSION: "5.9"
+packages:
+  ScrcpyHelperCore:
+    path: .
+targets:
+  ScrcpyHelper:
+    type: application
+    platform: macOS
+    sources:
+      - path: App/ScrcpyHelper
+        excludes:
+          - Resources/**
+    dependencies:
+      - package: ScrcpyHelperCore
+        product: ScrcpyHelperCore
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: tools.wayne.scrcpy-helper-menubar
+      PRODUCT_NAME: Scrcpy Helper
+      MARKETING_VERSION: "1.0.0"
+      CURRENT_PROJECT_VERSION: "1"
+      GENERATE_INFOPLIST_FILE: YES
+      INFOPLIST_KEY_CFBundleDisplayName: Scrcpy Helper
+      INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.utilities
+      INFOPLIST_KEY_LSUIElement: YES
+      INFOPLIST_KEY_NSHumanReadableCopyright: ""
+      ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+      CODE_SIGN_ENTITLEMENTS: App/ScrcpyHelper/ScrcpyHelper.entitlements
+      ENABLE_HARDENED_RUNTIME: YES
+      CODE_SIGN_IDENTITY: "-"
+      DEVELOPMENT_TEAM: ""
+      SWIFT_STRICT_CONCURRENCY: targeted
