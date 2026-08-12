@@ -41,6 +41,114 @@ final class ScrcpyLaunchOptionsTests: XCTestCase {
     }
 }
 
+final class ScrcpyClientTests: XCTestCase {
+    func testLaunchPassesResolvedAdbPathToScrcpyEnvironment() throws {
+        let launcher = RecordingScrcpyLauncher()
+        let client = ScrcpyClient(
+            configuredPath: "/tmp/scrcpy",
+            configuredAdbPath: "/tmp/adb",
+            launcher: launcher,
+            fileManager: ExecutableFileManager(paths: ["/tmp/scrcpy", "/tmp/adb"]),
+            pathEnvironment: "/usr/bin"
+        )
+
+        _ = try client.launch(serial: "DEVICE", options: ScrcpyLaunchOptions())
+
+        XCTAssertEqual(launcher.executable?.path, "/tmp/scrcpy")
+        XCTAssertEqual(launcher.arguments, ["-s", "DEVICE", "--no-audio", "--stay-awake"])
+        XCTAssertEqual(launcher.environment["ADB"], "/tmp/adb")
+    }
+
+    func testLaunchForwardsFailureCallback() throws {
+        let launcher = RecordingScrcpyLauncher()
+        let client = ScrcpyClient(
+            configuredPath: "/tmp/scrcpy",
+            configuredAdbPath: "/tmp/adb",
+            launcher: launcher,
+            fileManager: ExecutableFileManager(paths: ["/tmp/scrcpy", "/tmp/adb"])
+        )
+        let failure = LockedString()
+
+        _ = try client.launch(serial: "DEVICE", options: ScrcpyLaunchOptions()) { message in
+            failure.set(message)
+        }
+        launcher.reportFailure("adb 未授权")
+
+        XCTAssertEqual(failure.value, "adb 未授权")
+    }
+
+    func testFoundationLauncherForwardsStandardErrorAfterNonZeroExit() throws {
+        let expectation = expectation(description: "reports process failure")
+        let failure = LockedString()
+
+        _ = try FoundationScrcpyLauncher().launch(
+            executable: URL(fileURLWithPath: "/bin/sh"),
+            arguments: ["-c", "echo '无法连接设备' >&2; exit 2"],
+            environment: [:]
+        ) { message in
+            failure.set(message)
+            expectation.fulfill()
+        }
+
+        wait(for: [expectation], timeout: 2)
+        XCTAssertEqual(failure.value, "无法连接设备")
+    }
+}
+
+private final class RecordingScrcpyLauncher: ScrcpyLaunching, @unchecked Sendable {
+    var executable: URL?
+    var arguments: [String] = []
+    var environment: [String: String] = [:]
+    var onFailure: (@Sendable (String) -> Void)?
+
+    func launch(
+        executable: URL,
+        arguments: [String],
+        environment: [String: String],
+        onFailure: @escaping @Sendable (String) -> Void
+    ) throws -> Int32 {
+        self.executable = executable
+        self.arguments = arguments
+        self.environment = environment
+        self.onFailure = onFailure
+        return 123
+    }
+
+    func reportFailure(_ message: String) {
+        onFailure?(message)
+    }
+}
+
+private final class ExecutableFileManager: FileManager, @unchecked Sendable {
+    private let paths: Set<String>
+
+    init(paths: Set<String>) {
+        self.paths = paths
+        super.init()
+    }
+
+    override func isExecutableFile(atPath path: String) -> Bool {
+        paths.contains(path)
+    }
+}
+
+private final class LockedString: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage = ""
+
+    var value: String {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
+    }
+
+    func set(_ value: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        storage = value
+    }
+}
+
 final class ToolDetectorHintTests: XCTestCase {
     func testHints() {
         XCTAssertTrue(ToolDetector.installHint(for: ToolStatus(adbFound: false, scrcpyFound: true)).contains("adb"))

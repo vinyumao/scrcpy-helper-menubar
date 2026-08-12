@@ -77,9 +77,16 @@ final class AppModel: ObservableObject {
             return
         }
         do {
-            let client = ScrcpyClient(configuredPath: settings.scrcpyPath)
-            let pid = try client.launch(serial: device.sn, options: settings.launchOptions)
             lastError = nil
+            let client = ScrcpyClient(
+                configuredPath: settings.scrcpyPath,
+                configuredAdbPath: settings.adbPath
+            )
+            let pid = try client.launch(serial: device.sn, options: settings.launchOptions) { [weak self] message in
+                Task { @MainActor in
+                    self?.lastError = "scrcpy 已退出：\(message)"
+                }
+            }
             WindowFront.scheduleActivateScrcpy(pid: pid)
         } catch {
             lastError = error.localizedDescription

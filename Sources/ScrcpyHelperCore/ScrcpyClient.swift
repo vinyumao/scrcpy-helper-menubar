@@ -22,12 +22,15 @@ public struct ScrcpyLaunchOptions: Sendable, Equatable, Codable {
 
 public enum ScrcpyError: LocalizedError, Sendable {
     case scrcpyNotFound
+    case adbNotFound
     case launchFailed(String)
 
     public var errorDescription: String? {
         switch self {
         case .scrcpyNotFound:
             return "未找到 scrcpy，请在设置中配置或执行 brew install scrcpy"
+        case .adbNotFound:
+            return "未找到 adb，请在设置中配置或安装 Android platform-tools"
         case .launchFailed(let message):
             return "启动 scrcpy 失败: \(message)"
         }
@@ -36,21 +39,51 @@ public enum ScrcpyError: LocalizedError, Sendable {
 
 public protocol ScrcpyLaunching: Sendable {
     /// 启动 scrcpy 并返回进程 pid，便于调用方随后激活窗口。
+    /// 若进程以非零状态退出，回调会带回 scrcpy 的错误输出。
     @discardableResult
-    func launch(executable: URL, arguments: [String]) throws -> Int32
+    func launch(
+        executable: URL,
+        arguments: [String],
+        environment: [String: String],
+        onFailure: @escaping @Sendable (String) -> Void
+    ) throws -> Int32
 }
 
 public struct FoundationScrcpyLauncher: ScrcpyLaunching {
     public init() {}
 
     @discardableResult
-    public func launch(executable: URL, arguments: [String]) throws -> Int32 {
+    public func launch(
+        executable: URL,
+        arguments: [String],
+        environment: [String: String],
+        onFailure: @escaping @Sendable (String) -> Void
+    ) throws -> Int32 {
         let process = Process()
+        let errorURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("scrcpy-helper-\(UUID().uuidString).log")
+        FileManager.default.createFile(atPath: errorURL.path, contents: nil)
+        let errorFile = try FileHandle(forWritingTo: errorURL)
         process.executableURL = executable
         process.arguments = arguments
+        var processEnvironment = ProcessInfo.processInfo.environment
+        processEnvironment.merge(environment) { _, new in new }
+        process.environment = processEnvironment
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
+        process.standardError = errorFile
+        process.terminationHandler = { finishedProcess in
+            try? errorFile.close()
+            defer {
+                try? FileManager.default.removeItem(at: errorURL)
+                RunningScrcpyProcesses.release(finishedProcess)
+            }
+            guard finishedProcess.terminationStatus != 0 else { return }
+            let data = (try? Data(contentsOf: errorURL)) ?? Data()
+            let output = String(data: data, encoding: .utf8) ?? ""
+            let detail = output.trimmingCharacters(in: .whitespacesAndNewlines)
+            onFailure(detail.isEmpty ? "scrcpy 意外退出（退出码 \(finishedProcess.terminationStatus)）" : detail)
+        }
         // 保留引用，避免调用方尚未读到 pid 前对象被提前释放（子进程仍会继续跑）。
         RunningScrcpyProcesses.retain(process)
         do {
@@ -58,6 +91,8 @@ public struct FoundationScrcpyLauncher: ScrcpyLaunching {
             return process.processIdentifier
         } catch {
             RunningScrcpyProcesses.release(process)
+            try? errorFile.close()
+            try? FileManager.default.removeItem(at: errorURL)
             throw ScrcpyError.launchFailed(error.localizedDescription)
         }
     }
@@ -86,16 +121,19 @@ public struct ScrcpyClient {
     private let launcher: any ScrcpyLaunching
     private let fileManager: FileManager
     private let configuredPath: String?
+    private let configuredAdbPath: String?
     private let pathEnvironment: String?
 
     public init(
         configuredPath: String? = nil,
+        configuredAdbPath: String? = nil,
         processRunner: any ProcessRunning = FoundationProcessRunner(),
         launcher: any ScrcpyLaunching = FoundationScrcpyLauncher(),
         fileManager: FileManager = .default,
         pathEnvironment: String? = ProcessInfo.processInfo.environment["PATH"]
     ) {
         self.configuredPath = configuredPath
+        self.configuredAdbPath = configuredAdbPath
         self.processRunner = processRunner
         self.launcher = launcher
         self.fileManager = fileManager
@@ -116,10 +154,24 @@ public struct ScrcpyClient {
     }
 
     @discardableResult
-    public func launch(serial: String, options: ScrcpyLaunchOptions) throws -> Int32 {
+    public func launch(
+        serial: String,
+        options: ScrcpyLaunchOptions,
+        onFailure: @escaping @Sendable (String) -> Void = { _ in }
+    ) throws -> Int32 {
         guard let scrcpy = resolveScrcpyURL() else { throw ScrcpyError.scrcpyNotFound }
+        guard let adb = AdbClient(
+            configuredPath: configuredAdbPath,
+            fileManager: fileManager,
+            pathEnvironment: pathEnvironment
+        ).resolveAdbURL() else { throw ScrcpyError.adbNotFound }
         let args = options.arguments(serial: serial)
-        return try launcher.launch(executable: scrcpy, arguments: args)
+        return try launcher.launch(
+            executable: scrcpy,
+            arguments: args,
+            environment: ["ADB": adb.path],
+            onFailure: onFailure
+        )
     }
 
     /// 用于探测 scrcpy 是否能执行（可选 `--version`）。
