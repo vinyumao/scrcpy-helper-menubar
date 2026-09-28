@@ -26,6 +26,76 @@ final class AdbDevicesParserTests: XCTestCase {
     }
 }
 
+final class AdbTrackDevicesFrameParserTests: XCTestCase {
+    func testParsesSplitAndConsecutiveSnapshots() throws {
+        let first = "ABC123\tdevice\n"
+        let second = "ABC123\toffline\n"
+        let stream = frame(first) + frame(second) + frame("")
+        var parser = AdbTrackDevicesFrameParser()
+
+        XCTAssertEqual(try parser.append(Data(stream.prefix(2))), [])
+        XCTAssertEqual(try parser.append(Data(stream.dropFirst(2).prefix(7))), [])
+        XCTAssertEqual(try parser.append(Data(stream.dropFirst(9))), [first, second, ""])
+    }
+
+    func testRejectsInvalidFrameLength() {
+        var parser = AdbTrackDevicesFrameParser()
+        XCTAssertThrowsError(try parser.append(Data("ZZZZ".utf8)))
+        var negativeLengthParser = AdbTrackDevicesFrameParser()
+        XCTAssertThrowsError(try negativeLengthParser.append(Data("-001".utf8)))
+    }
+
+    private func frame(_ snapshot: String) -> Data {
+        Data(String(format: "%04X", snapshot.utf8.count).utf8) + Data(snapshot.utf8)
+    }
+}
+
+final class AdbDeviceTrackerTests: XCTestCase {
+    func testDeliversSnapshotWhileTrackingProcessIsRunning() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("adb-tracker-live-test-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let scriptURL = directory.appendingPathComponent("adb")
+        let snapshot = "DEMO123\tdevice\n"
+        let frame = String(format: "%04X", snapshot.utf8.count) + snapshot
+        try "#!/bin/sh\nprintf '%s' '\(frame)'\nexec /bin/sleep 15\n"
+            .write(to: scriptURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: scriptURL.path)
+
+        let received = expectation(description: "receives snapshot before process exit")
+        let tracker = AdbDeviceTracker(adbURL: scriptURL) { output in
+            if output == snapshot { received.fulfill() }
+        }
+        tracker.start()
+        wait(for: [received], timeout: 3)
+        tracker.stop()
+    }
+
+    func testRestartsTrackingProcessAfterExit() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("adb-tracker-test-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let scriptURL = directory.appendingPathComponent("adb")
+        let snapshot = "DEMO123\tdevice\n"
+        let frame = String(format: "%04X", snapshot.utf8.count) + snapshot
+        try "#!/bin/sh\nprintf '%s' '\(frame)'\n".write(to: scriptURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: scriptURL.path)
+
+        let received = expectation(description: "receives ADB snapshots after restart")
+        received.expectedFulfillmentCount = 2
+        let tracker = AdbDeviceTracker(adbURL: scriptURL) { output in
+            if output == snapshot { received.fulfill() }
+        }
+        tracker.start()
+        wait(for: [received], timeout: 5)
+        tracker.stop()
+    }
+}
+
 final class ScrcpyLaunchOptionsTests: XCTestCase {
     func testArgumentsIncludeFlags() {
         let options = ScrcpyLaunchOptions(noAudio: true, stayAwake: true, maxSize1024: true)

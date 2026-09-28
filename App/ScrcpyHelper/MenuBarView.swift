@@ -100,6 +100,7 @@ struct MenuBarView: View {
             Divider()
 
             Button("退出") {
+                appModel.stopTracking()
                 NSApplication.shared.terminate(nil)
             }
         }

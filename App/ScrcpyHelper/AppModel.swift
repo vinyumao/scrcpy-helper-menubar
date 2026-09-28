@@ -25,6 +25,9 @@ final class AppModel: ObservableObject {
 
     let settingsStore: SettingsStore
     let appSupportURL: URL
+    private var deviceTracker: AdbDeviceTracker?
+    private var trackedAdbURL: URL?
+    private var trackedRefreshTask: Task<Void, Never>?
     private var displayRefreshTask: Task<Void, Never>?
     private var displayRefreshGeneration = 0
 
@@ -42,6 +45,7 @@ final class AppModel: ObservableObject {
     var canLaunchScrcpy: Bool { toolStatus.allReady }
 
     func refresh() {
+        trackedRefreshTask?.cancel()
         displayRefreshTask?.cancel()
         displayRefreshGeneration += 1
         isRefreshing = true
@@ -50,6 +54,7 @@ final class AppModel: ObservableObject {
         let current = settingsStore.load()
         settings = current
         toolStatus = ToolDetector.check(settings: current)
+        configureDeviceTracker(adbPath: current.adbPath)
 
         guard toolStatus.adbFound else {
             devices = []
@@ -74,6 +79,35 @@ final class AppModel: ObservableObject {
             displayLookups = [:]
             unavailableCount = 0
             lastError = error.localizedDescription
+        }
+    }
+
+    private func configureDeviceTracker(adbPath: String?) {
+        let adbURL = AdbClient(configuredPath: adbPath).resolveAdbURL()
+        guard adbURL != trackedAdbURL else { return }
+        deviceTracker?.stop()
+        deviceTracker = nil
+        trackedAdbURL = adbURL
+        guard let adbURL else { return }
+        let tracker = AdbDeviceTracker(adbURL: adbURL) { [weak self] snapshot in
+            Task { @MainActor [weak self] in
+                self?.handleTrackedDevices(snapshot)
+            }
+        }
+        deviceTracker = tracker
+        tracker.start()
+    }
+
+    private func handleTrackedDevices(_ snapshot: String) {
+        let parsed = AdbDevicesParser.parse(snapshot)
+        let readySerials = Set(parsed.ready.map(\.sn))
+        let currentSerials = Set(devices.map(\.sn))
+        guard readySerials != currentSerials || parsed.unavailableCount != unavailableCount else { return }
+        trackedRefreshTask?.cancel()
+        trackedRefreshTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled else { return }
+            self?.refresh()
         }
     }
 
@@ -164,5 +198,11 @@ final class AppModel: ObservableObject {
     func copyInstallHintToPasteboard() {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(installHintText, forType: .string)
+    }
+
+    func stopTracking() {
+        trackedRefreshTask?.cancel()
+        displayRefreshTask?.cancel()
+        deviceTracker?.stop()
     }
 }
