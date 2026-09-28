@@ -2,16 +2,26 @@ import Foundation
 
 public protocol ProcessRunning: Sendable {
     @discardableResult
-    func run(executable: URL, arguments: [String]) throws -> (exitCode: Int32, stdout: String, stderr: String)
+    func run(executable: URL, arguments: [String], environment: [String: String]) throws -> (exitCode: Int32, stdout: String, stderr: String)
+}
+
+public extension ProcessRunning {
+    @discardableResult
+    func run(executable: URL, arguments: [String]) throws -> (exitCode: Int32, stdout: String, stderr: String) {
+        try run(executable: executable, arguments: arguments, environment: [:])
+    }
 }
 
 public struct FoundationProcessRunner: ProcessRunning {
     public init() {}
 
-    public func run(executable: URL, arguments: [String]) throws -> (exitCode: Int32, stdout: String, stderr: String) {
+    public func run(executable: URL, arguments: [String], environment: [String: String]) throws -> (exitCode: Int32, stdout: String, stderr: String) {
         let process = Process()
         process.executableURL = executable
         process.arguments = arguments
+        var processEnvironment = ProcessInfo.processInfo.environment
+        processEnvironment.merge(environment) { _, new in new }
+        process.environment = processEnvironment
         let out = Pipe()
         let err = Pipe()
         process.standardOutput = out

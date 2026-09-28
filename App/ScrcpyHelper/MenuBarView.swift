@@ -25,10 +25,39 @@ struct MenuBarView: View {
                 Text(appModel.toolStatus.adbFound ? "暂无已连接设备" : "无法列出设备")
             } else {
                 ForEach(appModel.devices) { device in
-                    Button(device.displayName) {
-                        appModel.launch(device: device)
+                    switch appModel.displayLookups[device.sn] {
+                    case .available(let displayIds) where displayIds.count > 1:
+                        Menu(device.displayName) {
+                            Button("打开默认屏幕") {
+                                appModel.launch(device: device)
+                            }
+                            Button("打开所有屏幕") {
+                                appModel.launchAllDisplays(device: device, displayIds: displayIds)
+                            }
+                        }
+                        .disabled(!appModel.canLaunchScrcpy || appModel.launchingAllSerials.contains(device.sn))
+                    case .checking:
+                        Menu(device.displayName) {
+                            Button("打开默认屏幕") {
+                                appModel.launch(device: device)
+                            }
+                            Text("正在检测屏幕…")
+                        }
+                        .disabled(!appModel.canLaunchScrcpy)
+                    case .failed:
+                        Menu(device.displayName) {
+                            Button("打开默认屏幕") {
+                                appModel.launch(device: device)
+                            }
+                            Text("无法读取屏幕列表，请重载设备")
+                        }
+                        .disabled(!appModel.canLaunchScrcpy)
+                    default:
+                        Button(device.displayName) {
+                            appModel.launch(device: device)
+                        }
+                        .disabled(!appModel.canLaunchScrcpy)
                     }
-                    .disabled(!appModel.canLaunchScrcpy)
                 }
             }
 

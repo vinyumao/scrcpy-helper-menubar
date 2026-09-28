@@ -4,11 +4,19 @@ import Foundation
 import ScrcpyHelperCore
 import SwiftUI
 
+enum DisplayLookup: Equatable {
+    case checking
+    case available([Int])
+    case failed
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     @Published var settings: AppSettings
     @Published var toolStatus: ToolStatus
     @Published var devices: [AdbDevice] = []
+    @Published var displayLookups: [String: DisplayLookup] = [:]
+    @Published var launchingAllSerials: Set<String> = []
     @Published var unavailableCount: Int = 0
     @Published var isRefreshing: Bool = false
     @Published var lastError: String?
@@ -17,6 +25,8 @@ final class AppModel: ObservableObject {
 
     let settingsStore: SettingsStore
     let appSupportURL: URL
+    private var displayRefreshTask: Task<Void, Never>?
+    private var displayRefreshGeneration = 0
 
     init() {
         let support = AppPaths.applicationSupportDirectory()
@@ -32,6 +42,8 @@ final class AppModel: ObservableObject {
     var canLaunchScrcpy: Bool { toolStatus.allReady }
 
     func refresh() {
+        displayRefreshTask?.cancel()
+        displayRefreshGeneration += 1
         isRefreshing = true
         defer { isRefreshing = false }
 
@@ -41,6 +53,7 @@ final class AppModel: ObservableObject {
 
         guard toolStatus.adbFound else {
             devices = []
+            displayLookups = [:]
             unavailableCount = 0
             return
         }
@@ -51,10 +64,42 @@ final class AppModel: ObservableObject {
             devices = result.devices
             unavailableCount = result.unavailableCount
             lastError = nil
+            if toolStatus.scrcpyFound {
+                refreshDisplays(for: result.devices, settings: current)
+            } else {
+                displayLookups = [:]
+            }
         } catch {
             devices = []
+            displayLookups = [:]
             unavailableCount = 0
             lastError = error.localizedDescription
+        }
+    }
+
+    private func refreshDisplays(for devices: [AdbDevice], settings: AppSettings) {
+        displayLookups = Dictionary(uniqueKeysWithValues: devices.map {
+            ($0.sn, displayLookups[$0.sn] ?? .checking)
+        })
+        let scrcpyPath = settings.scrcpyPath
+        let adbPath = settings.adbPath
+        let generation = displayRefreshGeneration
+        displayRefreshTask = Task.detached(priority: .utility) { [weak self] in
+            let client = ScrcpyClient(configuredPath: scrcpyPath, configuredAdbPath: adbPath)
+            for device in devices {
+                guard !Task.isCancelled else { return }
+                let lookup: DisplayLookup
+                do {
+                    lookup = .available(try client.listDisplays(serial: device.sn))
+                } catch {
+                    lookup = .failed
+                }
+                guard !Task.isCancelled else { return }
+                await MainActor.run { [weak self] in
+                    guard let self, self.displayRefreshGeneration == generation else { return }
+                    self.displayLookups[device.sn] = lookup
+                }
+            }
         }
     }
 
@@ -71,7 +116,7 @@ final class AppModel: ObservableObject {
         refresh()
     }
 
-    func launch(device: AdbDevice) {
+    func launch(device: AdbDevice, displayId: Int? = nil) {
         guard toolStatus.allReady else {
             presentInstallHint()
             return
@@ -82,7 +127,7 @@ final class AppModel: ObservableObject {
                 configuredPath: settings.scrcpyPath,
                 configuredAdbPath: settings.adbPath
             )
-            let pid = try client.launch(serial: device.sn, options: settings.launchOptions) { [weak self] message in
+            let pid = try client.launch(serial: device.sn, displayId: displayId, options: settings.launchOptions) { [weak self] message in
                 Task { @MainActor in
                     self?.lastError = "scrcpy 已退出：\(message)"
                 }
@@ -90,6 +135,20 @@ final class AppModel: ObservableObject {
             WindowFront.scheduleActivateScrcpy(pid: pid)
         } catch {
             lastError = error.localizedDescription
+        }
+    }
+
+    func launchAllDisplays(device: AdbDevice, displayIds: [Int]) {
+        guard launchingAllSerials.insert(device.sn).inserted else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.launchingAllSerials.remove(device.sn) }
+            for (index, displayId) in displayIds.enumerated() {
+                if index > 0 {
+                    try? await Task.sleep(for: .seconds(2))
+                }
+                self.launch(device: device, displayId: displayId)
+            }
         }
     }
 

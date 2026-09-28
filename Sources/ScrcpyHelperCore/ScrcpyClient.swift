@@ -11,8 +11,9 @@ public struct ScrcpyLaunchOptions: Sendable, Equatable, Codable {
         self.maxSize1024 = maxSize1024
     }
 
-    public func arguments(serial: String) -> [String] {
+    public func arguments(serial: String, displayId: Int? = nil) -> [String] {
         var args = ["-s", serial]
+        if let displayId { args.append("--display-id=\(displayId)") }
         if noAudio { args.append("--no-audio") }
         if stayAwake { args.append("--stay-awake") }
         if maxSize1024 { args.append("--max-size=1024") }
@@ -23,6 +24,7 @@ public struct ScrcpyLaunchOptions: Sendable, Equatable, Codable {
 public enum ScrcpyError: LocalizedError, Sendable {
     case scrcpyNotFound
     case adbNotFound
+    case displaysUnavailable
     case launchFailed(String)
 
     public var errorDescription: String? {
@@ -31,9 +33,25 @@ public enum ScrcpyError: LocalizedError, Sendable {
             return "未找到 scrcpy，请在设置中配置或执行 brew install scrcpy"
         case .adbNotFound:
             return "未找到 adb，请在设置中配置或安装 Android platform-tools"
+        case .displaysUnavailable:
+            return "scrcpy 未返回屏幕列表"
         case .launchFailed(let message):
             return "启动 scrcpy 失败: \(message)"
         }
+    }
+}
+
+public enum ScrcpyDisplaysParser {
+    public static func parse(_ output: String) -> [Int] {
+        let prefix = "--display-id="
+        var ids = Set<Int>()
+        for rawLine in output.split(whereSeparator: \.isNewline) {
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard line.hasPrefix(prefix) else { continue }
+            let digits = line.dropFirst(prefix.count).prefix(while: \.isNumber)
+            if let id = Int(digits) { ids.insert(id) }
+        }
+        return ids.sorted()
     }
 }
 
@@ -156,6 +174,7 @@ public struct ScrcpyClient {
     @discardableResult
     public func launch(
         serial: String,
+        displayId: Int? = nil,
         options: ScrcpyLaunchOptions,
         onFailure: @escaping @Sendable (String) -> Void = { _ in }
     ) throws -> Int32 {
@@ -165,13 +184,33 @@ public struct ScrcpyClient {
             fileManager: fileManager,
             pathEnvironment: pathEnvironment
         ).resolveAdbURL() else { throw ScrcpyError.adbNotFound }
-        let args = options.arguments(serial: serial)
+        let args = options.arguments(serial: serial, displayId: displayId)
         return try launcher.launch(
             executable: scrcpy,
             arguments: args,
             environment: ["ADB": adb.path],
             onFailure: onFailure
         )
+    }
+
+    public func listDisplays(serial: String) throws -> [Int] {
+        guard let scrcpy = resolveScrcpyURL() else { throw ScrcpyError.scrcpyNotFound }
+        guard let adb = AdbClient(
+            configuredPath: configuredAdbPath,
+            fileManager: fileManager,
+            pathEnvironment: pathEnvironment
+        ).resolveAdbURL() else { throw ScrcpyError.adbNotFound }
+        let result = try processRunner.run(
+            executable: scrcpy,
+            arguments: ["-s", serial, "--list-displays"],
+            environment: ["ADB": adb.path]
+        )
+        if result.exitCode != 0 {
+            throw ScrcpyError.launchFailed(result.stderr.isEmpty ? result.stdout : result.stderr)
+        }
+        let displays = ScrcpyDisplaysParser.parse(result.stdout + "\n" + result.stderr)
+        guard !displays.isEmpty else { throw ScrcpyError.displaysUnavailable }
+        return displays
     }
 
     /// 用于探测 scrcpy 是否能执行（可选 `--version`）。

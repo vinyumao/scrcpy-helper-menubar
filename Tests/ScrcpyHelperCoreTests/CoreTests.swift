@@ -39,6 +39,27 @@ final class ScrcpyLaunchOptionsTests: XCTestCase {
         let options = ScrcpyLaunchOptions(noAudio: false, stayAwake: false, maxSize1024: false)
         XCTAssertEqual(options.arguments(serial: "SN1"), ["-s", "SN1"])
     }
+
+    func testArgumentsSelectSecondaryDisplay() {
+        let options = ScrcpyLaunchOptions(noAudio: false, stayAwake: false, maxSize1024: false)
+        XCTAssertEqual(options.arguments(serial: "SN1", displayId: 7), ["-s", "SN1", "--display-id=7"])
+    }
+}
+
+final class ScrcpyDisplaysParserTests: XCTestCase {
+    func testParsesDistinctDisplayIds() {
+        let output = """
+        [server] INFO: List of displays:
+            --display-id=27    (1920x1080)
+            --display-id=0     (1080x2400)
+            --display-id=27    (1920x1080)
+        """
+        XCTAssertEqual(ScrcpyDisplaysParser.parse(output), [0, 27])
+    }
+
+    func testIgnoresUnrelatedOutput() {
+        XCTAssertEqual(ScrcpyDisplaysParser.parse("[server] WARN: no displays available"), [])
+    }
 }
 
 final class ScrcpyClientTests: XCTestCase {
@@ -77,6 +98,36 @@ final class ScrcpyClientTests: XCTestCase {
         XCTAssertEqual(failure.value, "adb 未授权")
     }
 
+    func testListDisplaysUsesSelectedAdbAndParsesStandardError() throws {
+        let runner = RecordingProcessRunner(
+            result: (0, "", "[server] INFO: List of displays:\n    --display-id=0 (1080x2400)\n    --display-id=2 (1920x1080)\n")
+        )
+        let client = ScrcpyClient(
+            configuredPath: "/tmp/scrcpy",
+            configuredAdbPath: "/tmp/adb",
+            processRunner: runner,
+            fileManager: ExecutableFileManager(paths: ["/tmp/scrcpy", "/tmp/adb"])
+        )
+
+        XCTAssertEqual(try client.listDisplays(serial: "DEVICE"), [0, 2])
+        XCTAssertEqual(runner.arguments, ["-s", "DEVICE", "--list-displays"])
+        XCTAssertEqual(runner.environment["ADB"], "/tmp/adb")
+    }
+
+    func testLaunchCanSelectDisplay() throws {
+        let launcher = RecordingScrcpyLauncher()
+        let client = ScrcpyClient(
+            configuredPath: "/tmp/scrcpy",
+            configuredAdbPath: "/tmp/adb",
+            launcher: launcher,
+            fileManager: ExecutableFileManager(paths: ["/tmp/scrcpy", "/tmp/adb"])
+        )
+
+        _ = try client.launch(serial: "DEVICE", displayId: 2, options: ScrcpyLaunchOptions())
+
+        XCTAssertEqual(launcher.arguments, ["-s", "DEVICE", "--display-id=2", "--no-audio", "--stay-awake"])
+    }
+
     func testFoundationLauncherForwardsStandardErrorAfterNonZeroExit() throws {
         let expectation = expectation(description: "reports process failure")
         let failure = LockedString()
@@ -92,6 +143,26 @@ final class ScrcpyClientTests: XCTestCase {
 
         wait(for: [expectation], timeout: 2)
         XCTAssertEqual(failure.value, "无法连接设备")
+    }
+}
+
+private final class RecordingProcessRunner: ProcessRunning, @unchecked Sendable {
+    let result: (exitCode: Int32, stdout: String, stderr: String)
+    var arguments: [String] = []
+    var environment: [String: String] = [:]
+
+    init(result: (exitCode: Int32, stdout: String, stderr: String)) {
+        self.result = result
+    }
+
+    func run(
+        executable: URL,
+        arguments: [String],
+        environment: [String: String]
+    ) throws -> (exitCode: Int32, stdout: String, stderr: String) {
+        self.arguments = arguments
+        self.environment = environment
+        return result
     }
 }
 
