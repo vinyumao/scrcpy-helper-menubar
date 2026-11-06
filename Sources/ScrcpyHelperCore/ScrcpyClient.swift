@@ -11,12 +11,22 @@ public struct ScrcpyLaunchOptions: Sendable, Equatable, Codable {
         self.maxSize1024 = maxSize1024
     }
 
-    public func arguments(serial: String, displayId: Int? = nil) -> [String] {
+    private enum CodingKeys: String, CodingKey { case noAudio, stayAwake, maxSize1024 }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        noAudio = try values.decodeIfPresent(Bool.self, forKey: .noAudio) ?? true
+        stayAwake = try values.decodeIfPresent(Bool.self, forKey: .stayAwake) ?? true
+        maxSize1024 = try values.decodeIfPresent(Bool.self, forKey: .maxSize1024) ?? false
+    }
+
+    public func arguments(serial: String, displayId: Int? = nil, windowTitle: String? = nil) -> [String] {
         var args = ["-s", serial]
         if let displayId { args.append("--display-id=\(displayId)") }
         if noAudio { args.append("--no-audio") }
         if stayAwake { args.append("--stay-awake") }
         if maxSize1024 { args.append("--max-size=1024") }
+        if let windowTitle { args.append("--window-title=\(windowTitle)") }
         return args
     }
 }
@@ -176,6 +186,7 @@ public struct ScrcpyClient {
         serial: String,
         displayId: Int? = nil,
         options: ScrcpyLaunchOptions,
+        windowTitle: String? = nil,
         onFailure: @escaping @Sendable (String) -> Void = { _ in }
     ) throws -> Int32 {
         guard let scrcpy = resolveScrcpyURL() else { throw ScrcpyError.scrcpyNotFound }
@@ -184,7 +195,7 @@ public struct ScrcpyClient {
             fileManager: fileManager,
             pathEnvironment: pathEnvironment
         ).resolveAdbURL() else { throw ScrcpyError.adbNotFound }
-        let args = options.arguments(serial: serial, displayId: displayId)
+        let args = options.arguments(serial: serial, displayId: displayId, windowTitle: windowTitle)
         return try launcher.launch(
             executable: scrcpy,
             arguments: args,
@@ -193,14 +204,14 @@ public struct ScrcpyClient {
         )
     }
 
-    public func listDisplays(serial: String) throws -> [Int] {
+    public func listDisplays(serial: String) async throws -> [Int] {
         guard let scrcpy = resolveScrcpyURL() else { throw ScrcpyError.scrcpyNotFound }
         guard let adb = AdbClient(
             configuredPath: configuredAdbPath,
             fileManager: fileManager,
             pathEnvironment: pathEnvironment
         ).resolveAdbURL() else { throw ScrcpyError.adbNotFound }
-        let result = try processRunner.run(
+        let result = try await processRunner.run(
             executable: scrcpy,
             arguments: ["-s", serial, "--list-displays"],
             environment: ["ADB": adb.path]
@@ -214,9 +225,9 @@ public struct ScrcpyClient {
     }
 
     /// 用于探测 scrcpy 是否能执行（可选 `--version`）。
-    public func versionString() throws -> String? {
+    public func versionString() async throws -> String? {
         guard let scrcpy = resolveScrcpyURL() else { throw ScrcpyError.scrcpyNotFound }
-        let result = try processRunner.run(executable: scrcpy, arguments: ["--version"])
+        let result = try await processRunner.run(executable: scrcpy, arguments: ["--version"])
         if result.exitCode != 0 {
             throw ScrcpyError.launchFailed(result.stderr.isEmpty ? result.stdout : result.stderr)
         }

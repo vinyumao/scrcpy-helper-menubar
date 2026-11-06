@@ -168,7 +168,7 @@ final class ScrcpyClientTests: XCTestCase {
         XCTAssertEqual(failure.value, "adb 未授权")
     }
 
-    func testListDisplaysUsesSelectedAdbAndParsesStandardError() throws {
+    func testListDisplaysUsesSelectedAdbAndParsesStandardError() async throws {
         let runner = RecordingProcessRunner(
             result: (0, "", "[server] INFO: List of displays:\n    --display-id=0 (1080x2400)\n    --display-id=2 (1920x1080)\n")
         )
@@ -179,7 +179,8 @@ final class ScrcpyClientTests: XCTestCase {
             fileManager: ExecutableFileManager(paths: ["/tmp/scrcpy", "/tmp/adb"])
         )
 
-        XCTAssertEqual(try client.listDisplays(serial: "DEVICE"), [0, 2])
+        let displays = try await client.listDisplays(serial: "DEVICE")
+        XCTAssertEqual(displays, [0, 2])
         XCTAssertEqual(runner.arguments, ["-s", "DEVICE", "--list-displays"])
         XCTAssertEqual(runner.environment["ADB"], "/tmp/adb")
     }
@@ -229,7 +230,7 @@ private final class RecordingProcessRunner: ProcessRunning, @unchecked Sendable 
         executable: URL,
         arguments: [String],
         environment: [String: String]
-    ) throws -> (exitCode: Int32, stdout: String, stderr: String) {
+    ) async throws -> (exitCode: Int32, stdout: String, stderr: String) {
         self.arguments = arguments
         self.environment = environment
         return result

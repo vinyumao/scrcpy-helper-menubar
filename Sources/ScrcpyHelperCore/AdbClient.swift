@@ -125,25 +125,30 @@ public struct AdbClient {
         )
     }
 
-    public func listReadyDevices() throws -> (devices: [AdbDevice], unavailableCount: Int) {
+    public func listReadyDevices(knownDevices: [String: AdbDevice] = [:]) async throws -> (devices: [AdbDevice], unavailableCount: Int) {
         let adb = try requireAdb()
-        let result = try processRunner.run(executable: adb, arguments: ["devices", "-l"])
+        let result = try await processRunner.run(executable: adb, arguments: ["devices", "-l"])
         if result.exitCode != 0 {
             throw AdbError.commandFailed(result.stderr.isEmpty ? result.stdout : result.stderr)
         }
         let parsed = AdbDevicesParser.parse(result.stdout)
         var devices: [AdbDevice] = []
         for line in parsed.ready {
-            var brand = try? getProp(sn: line.sn, key: "ro.product.brand", adb: adb)
+            try Task.checkCancellation()
+            if let known = knownDevices[line.sn], line.model == nil || line.model == known.model {
+                devices.append(known)
+                continue
+            }
+            var brand = try await getProp(sn: line.sn, key: "ro.product.brand", adb: adb)
             if brand == nil {
-                brand = try? getProp(sn: line.sn, key: "ro.product.manufacturer", adb: adb)
+                brand = try await getProp(sn: line.sn, key: "ro.product.manufacturer", adb: adb)
             }
             if brand == nil {
                 brand = line.product
             }
             var model = line.model
             if model == nil {
-                model = try? getProp(sn: line.sn, key: "ro.product.model", adb: adb)
+                model = try await getProp(sn: line.sn, key: "ro.product.model", adb: adb)
             }
             devices.append(
                 AdbDevice(
@@ -153,11 +158,13 @@ public struct AdbClient {
                 )
             )
         }
+        try Task.checkCancellation()
         return (devices, parsed.unavailableCount)
     }
 
-    private func getProp(sn: String, key: String, adb: URL) throws -> String? {
-        let result = try processRunner.run(executable: adb, arguments: ["-s", sn, "shell", "getprop", key])
+    private func getProp(sn: String, key: String, adb: URL) async throws -> String? {
+        let result = try await processRunner.run(executable: adb, arguments: ["-s", sn, "shell", "getprop", key])
+        guard result.exitCode == 0 else { return nil }
         return AdbDevicesParser.sanitizeProp(result.stdout)
     }
 

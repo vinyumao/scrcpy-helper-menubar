@@ -22,47 +22,53 @@ struct MenuBarView: View {
             Divider()
 
             if appModel.devices.isEmpty {
-                Text(appModel.toolStatus.adbFound ? "暂无已连接设备" : "无法列出设备")
+                Text(appModel.isRefreshing ? "正在读取设备…" : (appModel.toolStatus.adbFound ? "暂无已连接设备" : "无法列出设备"))
             } else {
                 ForEach(appModel.devices) { device in
-                    switch appModel.displayLookups[device.sn] {
-                    case .available(let displayIds) where displayIds.count > 1:
-                        Menu(device.displayName) {
-                            Button("打开默认屏幕") {
-                                appModel.launch(device: device)
-                            }
-                            Button("打开所有屏幕") {
-                                appModel.launchAllDisplays(device: device, displayIds: displayIds)
-                            }
+                    Menu(appModel.deviceTitle(device)) {
+                        let preferred = appModel.preferredDisplay(for: device.sn)
+                        Button(preferred.map { "打开屏幕 \($0)（已记住）" } ?? "打开默认屏幕") {
+                            appModel.launch(device: device, displayId: preferred)
                         }
                         .disabled(!appModel.canLaunchScrcpy || appModel.launchingAllSerials.contains(device.sn))
-                    case .checking:
-                        Menu(device.displayName) {
-                            Button("打开默认屏幕") {
-                                appModel.launch(device: device)
+
+                        switch appModel.displayLookups[device.sn] {
+                        case .available(let displayIds):
+                            Divider()
+                            ForEach(displayIds, id: \.self) { displayId in
+                                Button("屏幕 \(displayId)\(displayId == 0 ? "（主屏）" : "")") {
+                                    appModel.launch(device: device, displayId: displayId, rememberSelection: true)
+                                }
+                                .disabled(!appModel.canLaunchScrcpy || appModel.launchingAllSerials.contains(device.sn))
                             }
+                            if displayIds.count > 1 {
+                                Button(appModel.launchingAllSerials.contains(device.sn) ? "正在打开所有屏幕…" : "打开所有屏幕") {
+                                    appModel.launchAllDisplays(device: device, displayIds: displayIds)
+                                }
+                                .disabled(!appModel.canLaunchScrcpy || appModel.launchingAllSerials.contains(device.sn))
+                            }
+                        case .checking:
                             Text("正在检测屏幕…")
-                        }
-                        .disabled(!appModel.canLaunchScrcpy)
-                    case .failed:
-                        Menu(device.displayName) {
-                            Button("打开默认屏幕") {
-                                appModel.launch(device: device)
-                            }
+                        case .failed:
                             Text("无法读取屏幕列表，请重载设备")
+                        case nil:
+                            EmptyView()
                         }
-                        .disabled(!appModel.canLaunchScrcpy)
-                    default:
-                        Button(device.displayName) {
-                            appModel.launch(device: device)
+
+                        Divider()
+                        Text(appModel.settings.devices[device.sn]?.launchOptions == nil ? "使用全局启动选项" : "使用此设备的独立选项")
+                        Button("设备设置…") {
+                            appModel.requestSettings(for: device.sn)
+                            openSettings()
+                            WindowFront.scheduleRaise()
                         }
-                        .disabled(!appModel.canLaunchScrcpy)
                     }
                 }
             }
 
             Divider()
 
+            Text("全局启动选项")
             Toggle(
                 "关闭音频",
                 isOn: Binding(
@@ -93,6 +99,7 @@ struct MenuBarView: View {
             .disabled(appModel.isRefreshing)
 
             Button("设置…") {
+                appModel.requestSettings()
                 openSettings()
                 WindowFront.scheduleRaise()
             }
@@ -105,7 +112,7 @@ struct MenuBarView: View {
             }
         }
         .onAppear {
-            appModel.refresh()
+            appModel.refreshIfNeeded()
         }
         .alert(
             "安装指引",
@@ -116,6 +123,7 @@ struct MenuBarView: View {
             }
             Button("打开设置") {
                 appModel.showInstallHint = false
+                appModel.requestSettings()
                 openSettings()
                 WindowFront.scheduleRaise()
             }
