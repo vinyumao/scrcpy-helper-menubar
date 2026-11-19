@@ -34,6 +34,8 @@ public enum AdbError: LocalizedError, Sendable {
 
 /// 解析 `adb devices -l` 输出（不含 getprop）。
 public enum AdbDevicesParser {
+    private static let detailPrefixes = ["usb:", "product:", "model:", "device:", "transport_id:"]
+
     public struct RawLine: Sendable, Equatable {
         public var sn: String
         public var state: String
@@ -65,13 +67,20 @@ public enum AdbDevicesParser {
     }
 
     public static func parseLine(_ line: String) -> RawLine? {
-        let parts = line.split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
+        let parts = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
         guard parts.count >= 2 else { return nil }
-        let sn = parts[0]
-        let state = parts[1]
+
+        // ADB may use a single space after a long serial, and the serial may contain spaces.
+        // The state precedes the optional details. Keep the serial's original spacing.
+        let detailsStart = parts.indices.dropFirst(2).first { index in
+            detailPrefixes.contains { parts[index].hasPrefix($0) }
+        } ?? parts.endIndex
+        let stateIndex = detailsStart - 1
+        let sn = String(line[parts[0].startIndex..<parts[stateIndex - 1].endIndex])
+        let state = String(parts[stateIndex])
         var product: String?
         var model: String?
-        for part in parts.dropFirst(2) {
+        for part in parts[detailsStart...] {
             if product == nil, part.hasPrefix("product:") {
                 product = String(part.dropFirst("product:".count))
             } else if model == nil, part.hasPrefix("model:") {

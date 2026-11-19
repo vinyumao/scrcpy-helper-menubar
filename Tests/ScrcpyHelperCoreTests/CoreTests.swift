@@ -19,6 +19,19 @@ final class AdbDevicesParserTests: XCTestCase {
         XCTAssertEqual(parsed.ready[1].product, "cross")
     }
 
+    func testPreservesWirelessSerialsContainingSpaces() {
+        let serial = "adb-demo-example (2)._adb-tls-connect._tcp"
+        let output = """
+        \(serial) device product:taiko_id model:25040RP0AG device:taiko transport_id:7
+        adb-demo-other (3)._adb-tls-connect._tcp offline transport_id:8
+        """
+        let parsed = AdbDevicesParser.parse(output)
+
+        XCTAssertEqual(parsed.ready, [.init(sn: serial, state: "device", product: "taiko_id", model: "25040RP0AG")])
+        XCTAssertEqual(parsed.unavailableCount, 1)
+        XCTAssertEqual(AdbDevicesParser.parseLine("\(serial)\tdevice"), .init(sn: serial, state: "device"))
+    }
+
     func testSanitizeProp() {
         XCTAssertNil(AdbDevicesParser.sanitizeProp(" error: closed\n"))
         XCTAssertNil(AdbDevicesParser.sanitizeProp("not found"))
